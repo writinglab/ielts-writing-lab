@@ -143,6 +143,26 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
 .mt8{margin-top:8px}.mt12{margin-top:12px}.mb12{margin-bottom:12px}.mb14{margin-bottom:14px}
 .hidden{display:none!important}
 
+/* ── DEVICE SELECT (Phase 0) ── */
+.p0-wrap{display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 58px);padding:24px}
+.p0-card{background:#fff;border-radius:20px;padding:40px;box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:480px;width:100%;border:1px solid #E8ECF0;text-align:center}
+.p0-card h2{font-size:22px;font-weight:800;color:#1B2A4A;margin-bottom:6px}
+.p0-card .sub{font-size:13px;color:#8B95A5;margin-bottom:28px}
+.dv-group{display:flex;gap:16px}
+.dv-btn{flex:1;padding:28px 16px;border:2px solid #E0E4EA;border-radius:14px;background:#fff;cursor:pointer;text-align:center;transition:all .25s;font-family:inherit;color:#4A5568}
+.dv-btn:hover{border-color:#1B2A4A;background:#F8FAFB;transform:translateY(-2px);box-shadow:0 4px 16px rgba(27,42,74,.1)}
+.dv-btn:active{transform:translateY(0)}
+.dv-icon{font-size:36px;margin-bottom:10px}
+.dv-btn b{display:block;font-size:16px;font-weight:700;color:#1B2A4A}
+.dv-btn span{display:block;font-size:11px;opacity:.6;margin-top:4px;line-height:1.4}
+
+/* ── MOBILE EXAM MODE ── */
+.mobile-mode .exam-left{display:none!important}
+.mobile-mode .exam-divider{display:none!important}
+.mobile-mode .exam-right{width:100%!important;min-height:calc(100vh - 58px)}
+.mobile-mode .exam-split{flex-direction:row!important;height:calc(100vh - 58px)!important;overflow:hidden!important}
+.mobile-mode .ex-essay-area textarea{font-size:16px}
+
 @media(max-width:800px){
   .exam-split{flex-direction:column;height:auto}
   .exam-left,.exam-right{width:100%}
@@ -185,8 +205,36 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
   <img id="zoomImg" src="" alt="Zoomed image">
 </div>
 
+<!-- ═══ PHASE 0: DEVICE SELECT ═══ -->
+<div id="P0">
+  <div class="hdr">
+    <div class="hdr-logo">
+      <div class="hdr-icon">✎</div>
+      <div><div class="hdr-t">IELTS Writing Lab</div><div class="hdr-s">Exam Simulation</div></div>
+    </div>
+  </div>
+  <div class="p0-wrap">
+    <div class="p0-card">
+      <h2>Welcome!</h2>
+      <div class="sub">Which device are you using?</div>
+      <div class="dv-group">
+        <button class="dv-btn" onclick="pickDevice('pc')">
+          <div class="dv-icon">💻</div>
+          <b>PC / Laptop</b>
+          <span>Split-screen with prompt on the left</span>
+        </button>
+        <button class="dv-btn" onclick="pickDevice('mobile')">
+          <div class="dv-icon">📱</div>
+          <b>Mobile Phone</b>
+          <span>Full-screen writing area only</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ PHASE 1: SETUP ═══ -->
-<div id="P1">
+<div id="P1" class="hidden">
   <div class="hdr">
     <div class="hdr-logo">
       <div class="hdr-icon">✎</div>
@@ -425,7 +473,7 @@ var SUBMIT_URL = 'https://script.google.com/macros/s/AKfycbzTmA0FGLa3nmFAinPjM1_
 
 /* ═══ CONFIG ═══ */
 var TK={task1:{l:'Task 1',t:20,w:150,d:'Academic / General Training'},task2:{l:'Task 2',t:40,w:250,d:'Essay'},full:{l:'Full Test',t:60,w:150,d:'Task 1 + Task 2'}};
-var S={task:'task1',img:null,imgT1:null,name:'',cls:'',prompt:'',prompt2:'',essay:'',essay2:'',tl:0,total:0,run:false,t0:null,vio:[],snaps:[],ti:null,si:null,url:''};
+var S={task:'task1',img:null,imgT1:null,name:'',cls:'',prompt:'',prompt2:'',essay:'',essay2:'',tl:0,total:0,run:false,t0:null,vio:[],snaps:[],ti:null,si:null,url:'',device:'pc'};
 var vioNum=0,lastLeaveTs=0,imgZoom=100,activeTab=1;
 
 function $(id){return document.getElementById(id)}
@@ -434,14 +482,34 @@ function fmt(s){return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60)
 function wc(t){return t.trim().split(/\s+/).filter(Boolean).length}
 function ts(d){return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 
+/* ═══ DEVICE SELECT ═══ */
+function pickDevice(d){
+  S.device=d;
+  D('P0',0);D('P1',1);
+  if(d==='mobile'){
+    /* Hide all prompt input sections */
+    $('singlePromptBox').style.display='none';
+    $('singleImgBox').style.display='none';
+    $('fullPromptBox').style.display='none';
+  }
+}
+
 /* ═══ SETUP ═══ */
 function pickTask(t){
   S.task=t;
   document.querySelectorAll('.tb').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});
   var isFull=t==='full';
-  $('singlePromptBox').style.display=isFull?'none':'';
-  $('singleImgBox').style.display=(isFull||t==='task2')?'none':'';
-  $('fullPromptBox').style.display=isFull?'':'none';
+  if(S.device==='mobile'){
+    /* Mobile: always hide all prompt inputs */
+    $('singlePromptBox').style.display='none';
+    $('singleImgBox').style.display='none';
+    $('fullPromptBox').style.display='none';
+  } else {
+    /* PC: show/hide prompt inputs based on task */
+    $('singlePromptBox').style.display=isFull?'none':'';
+    $('singleImgBox').style.display=(isFull||t==='task2')?'none':'';
+    $('fullPromptBox').style.display=isFull?'':'none';
+  }
   chk();
 }
 $('inImg').onchange=function(e){
@@ -479,11 +547,15 @@ function clearImgT1(){
 
 function chk(){
   var ok=$('inClass').value&&$('inName').value.trim();
-  if(S.task==='full'){
-    ok=ok&&($('inPromptT1').value.trim()||S.imgT1)&&$('inPromptT2').value.trim();
-  } else {
-    ok=ok&&($('inPrompt').value.trim()||S.img);
+  if(S.device!=='mobile'){
+    /* PC mode: require prompts */
+    if(S.task==='full'){
+      ok=ok&&($('inPromptT1').value.trim()||S.imgT1)&&$('inPromptT2').value.trim();
+    } else {
+      ok=ok&&($('inPrompt').value.trim()||S.img);
+    }
   }
+  /* Mobile mode: only need class + name */
   $('goBtn').disabled=!ok;
 }
 $('inName').oninput=chk;
@@ -558,16 +630,26 @@ function go(){
   S.cls=$('inClass').value;
   S.url=SUBMIT_URL;
   var isFull=S.task==='full';
+  var isMobile=S.device==='mobile';
 
-  if(isFull){
-    S.prompt=$('inPromptT1').value.trim();
-    S.prompt2=$('inPromptT2').value.trim();
-    S.img=S.imgT1;
-    if(!S.cls||!S.name||(!S.prompt&&!S.img)||!S.prompt2)return;
+  if(isMobile){
+    /* Mobile: no prompts needed */
+    S.prompt='(Mobile — prompt provided separately by teacher)';
+    S.prompt2=isFull?'(Mobile — prompt provided separately by teacher)':'';
+    S.img=null;S.imgT1=null;
+    if(!S.cls||!S.name)return;
   } else {
-    S.prompt=$('inPrompt').value.trim();
-    S.prompt2='';
-    if(!S.cls||!S.name||(!S.prompt&&!S.img))return;
+    /* PC: read prompts as usual */
+    if(isFull){
+      S.prompt=$('inPromptT1').value.trim();
+      S.prompt2=$('inPromptT2').value.trim();
+      S.img=S.imgT1;
+      if(!S.cls||!S.name||(!S.prompt&&!S.img)||!S.prompt2)return;
+    } else {
+      S.prompt=$('inPrompt').value.trim();
+      S.prompt2='';
+      if(!S.cls||!S.name||(!S.prompt&&!S.img))return;
+    }
   }
 
   var tk=TK[S.task],ct=$('inTime').value;
@@ -581,6 +663,18 @@ function go(){
   S.run=true;
   D('P1',0);D('P2',1);
   document.body.style.background='#E8ECF0';
+
+  /* Apply mobile mode class */
+  if(isMobile){
+    $('P2').classList.add('mobile-mode');
+    $('exHdrSingle').style.display='none';
+    /* For mobile single task: show a simple header on the essay side */
+    if(!isFull){
+      $('exEssHdrSingle').style.display='';
+      $('pTabs').className='extabs';
+      $('eTabs').className='extabs';
+    }
+  }
 
   $('exSub').textContent=tk.l+' — '+S.cls+' — '+S.name;
 
