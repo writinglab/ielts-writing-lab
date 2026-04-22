@@ -469,7 +469,7 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
    TEACHER CONFIG — Paste your Google Apps Script URL below.
    Leave blank '' if not using auto-submission.
    ═══════════════════════════════════════════════════════════ */
-var SUBMIT_URL = 'https://script.google.com/macros/s/AKfycbzTmA0FGLa3nmFAinPjM1_8xr0EAHSKUEKy-4hmU60nxsq86zAUOUVM8zEFWIdosf4E/exec';
+var SUBMIT_URL = 'https://script.google.com/macros/s/AKfycbydBkHZ4HRkOaCYIx2yOzN9Cqpsf8HcjezipYBSFqDtGNuIsrMFuhWGIdKaXvhaVvid/exec';
 
 /* ═══ CONFIG ═══ */
 var TK={task1:{l:'Task 1',t:20,w:150,d:'Academic / General Training'},task2:{l:'Task 2',t:40,w:250,d:'Essay'},full:{l:'Full Test',t:60,w:150,d:'Task 1 + Task 2'}};
@@ -873,31 +873,33 @@ function cpEssay(n){
 function rdata(){
   var tk=TK[S.task],w=wc(S.essay),el=S.total-S.tl;
   var dd=String(S.t0.getDate()).padStart(2,'0'),mm=String(S.t0.getMonth()+1).padStart(2,'0'),yy=String(S.t0.getFullYear()).slice(2);
+  var isFull=S.task==='full';
   var obj={
     studentName:S.name,className:S.cls,taskType:tk.l,taskDesc:tk.d,
     shortDate:dd+'-'+mm+'-'+yy,
     date:S.t0.toLocaleDateString('en-GB'),time:S.t0.toLocaleTimeString('en-GB'),
     totalTime:fmt(S.total),timeSpent:fmt(el),
     wordCount:w,minWords:tk.w,violations:vioNum,
-    wordCount2:wc(S.essay2),isFull:S.task==='full',
+    isFull:isFull,
     violationDetails:S.vio.map(function(vi){return vi.l}).join('\n')||'No violations',
     writingHistory:S.snaps.map(function(sn,i){
       var prev=i>0?S.snaps[i-1].words:0;var d=sn.words-prev;
-      var extra=S.task==='full'?' | T2: '+sn.words2:'';
+      var extra=isFull?' | T2: '+sn.words2:'';
       return fmt(sn.time)+' | '+sn.words+' words | '+(d>=0?'+':'')+d+extra;
     }).join('\n'),
-    prompt:S.prompt,prompt2:S.prompt2||'',hasImage:!!S.img,
-    essay:S.essay||'(No content)',essay2:S.essay2||'(No content)'
+    hasImage:!!S.img,
+    /* Always send essay1/prompt1/wordCount1 — this is what Apps Script reads */
+    essay1:S.essay||'(No content)',
+    prompt1:S.prompt||'',
+    wordCount1:w,
+    /* Always send essay2/prompt2/wordCount2 */
+    essay2:isFull?(S.essay2||'(No content)'):'(N/A — single task)',
+    prompt2:isFull?(S.prompt2||''):'',
+    wordCount2:isFull?wc(S.essay2):0,
+    /* Legacy fields for backward compat */
+    essay:S.essay||'(No content)',
+    prompt:S.prompt||''
   };
-  /* Full Test: ensure both tasks are visible even if Apps Script only reads 'essay' field */
-  if(S.task==='full'){
-    obj.essay1=S.essay||'(No content)';
-    obj.prompt1=S.prompt||'';
-    obj.wordCount1=w;
-    /* Overwrite 'essay' and 'prompt' with combined content so server always gets everything */
-    obj.essay='=== TASK 1 ESSAY ===\n'+(S.essay||'(No content)')+'\n\n=== TASK 2 ESSAY ===\n'+(S.essay2||'(No content)');
-    obj.prompt='=== TASK 1 PROMPT ===\n'+(S.prompt||'')+'\n\n=== TASK 2 PROMPT ===\n'+(S.prompt2||'');
-  }
   return obj;
 }
 
@@ -961,38 +963,58 @@ function exportDoc(){
 }
 
 /* ═══ SUBMIT TO DRIVE (with auto-retry) ═══ */
-var driveRetryTimer=null,driveRetryCount=0,driveMaxRetries=60; /* retry up to ~10 min */
+var driveRetryTimer=null,driveRetryCount=0,driveMaxRetries=120; /* retry up to ~30 min */
+var driveData=null; /* cache data for retries */
 
 function submitToDrive(){
   if(!S.url)return;
   driveRetryCount=0;
+  driveData=JSON.stringify(rdata());
   attemptDriveSubmit();
 }
 
 function attemptDriveSubmit(){
-  var data=rdata();
+  if(!driveData)return;
   driveRetryCount++;
   var retryMsg=driveRetryCount>1?' (attempt '+driveRetryCount+')':'';
   $('subSt').innerHTML='<div class="ss ss-load">⏳ Submitting to teacher...'+retryMsg+'</div>';
 
-  fetch(S.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data)})
-  .then(function(resp){
-    /* mode:'no-cors' → opaque response, status=0; treat as success */
+  /* Check if offline first */
+  if(!navigator.onLine){
+    scheduleRetry('You appear to be offline');
+    return;
+  }
+
+  fetch(S.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:driveData})
+  .then(function(){
+    /* mode:'no-cors' → opaque response; if fetch resolved, request was sent */
     $('subSt').innerHTML='<div class="ss ss-ok">✅ Report downloaded & submitted to teacher successfully!</div>';
     if(driveRetryTimer){clearTimeout(driveRetryTimer);driveRetryTimer=null}
+    driveData=null;
   })
   .catch(function(err){
-    if(driveRetryCount>=driveMaxRetries){
-      $('subSt').innerHTML='<div class="ss ss-fail">✅ Report downloaded. ❌ Could not submit after '+driveRetryCount+' attempts — please send the .doc file to your teacher manually.</div>';
-      return;
-    }
-    /* Calculate delay: 5s for first few, then 10s, then 15s */
-    var delay=driveRetryCount<=5?5000:driveRetryCount<=15?10000:15000;
-    var sec=Math.ceil(delay/1000);
-    $('subSt').innerHTML='<div class="ss ss-fail">⚠️ No connection — retrying in '+sec+'s (attempt '+driveRetryCount+'/'+driveMaxRetries+')...<br><span style="font-size:12px;opacity:.7">Make sure you have internet. The report will auto-submit once connected.</span></div>';
-    driveRetryTimer=setTimeout(attemptDriveSubmit,delay);
+    scheduleRetry('Network error');
   });
 }
+
+function scheduleRetry(reason){
+  if(driveRetryCount>=driveMaxRetries){
+    $('subSt').innerHTML='<div class="ss ss-fail">✅ Report downloaded. ❌ Could not submit after '+driveRetryCount+' attempts — please send the .doc file to your teacher manually.</div>';
+    return;
+  }
+  var delay=driveRetryCount<=5?5000:driveRetryCount<=20?10000:15000;
+  var sec=Math.ceil(delay/1000);
+  $('subSt').innerHTML='<div class="ss ss-fail">⚠️ '+reason+' — retrying in '+sec+'s (attempt '+driveRetryCount+')...<br><span style="font-size:12px;opacity:.7">The report will auto-submit once connected.</span></div>';
+  driveRetryTimer=setTimeout(attemptDriveSubmit,delay);
+}
+
+/* Also retry when coming back online */
+window.addEventListener('online',function(){
+  if(driveData&&driveRetryTimer){
+    clearTimeout(driveRetryTimer);
+    setTimeout(attemptDriveSubmit,1000);
+  }
+});
 
 function exportAndSubmit(){
   exportDoc();
