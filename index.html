@@ -790,6 +790,7 @@ function doSubmit(){
   S.essay2=ta2||S.essay2;
   snap();
   clearInterval(S.ti);clearInterval(S.si);S.run=false;
+  releaseWakeLock();
   document.removeEventListener('visibilitychange',onVis);
   window.removeEventListener('blur',onBlur);
   review();
@@ -1024,6 +1025,30 @@ function exportAndSubmit(){
     $('subSt').innerHTML='<div class="ss ss-ok">✅ Report downloaded. Send the .doc file to your teacher via Zalo / Email / Drive.</div>';
   }
 }
+
+/* ═══ SCREEN WAKE LOCK — prevent screen from turning off ═══ */
+var wakeLock=null;
+
+async function requestWakeLock(){
+  try{
+    if('wakeLock' in navigator){
+      wakeLock=await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release',function(){wakeLock=null});
+    }
+  }catch(e){}
+}
+
+function releaseWakeLock(){
+  if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null}
+}
+
+/* Re-acquire wake lock when tab becomes visible again */
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible'&&S.run){requestWakeLock()}
+});
+
+/* Request on page load */
+requestWakeLock();
 </script>
 </body>
 </html>
