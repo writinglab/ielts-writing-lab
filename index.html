@@ -114,6 +114,18 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
 .wc{background:rgba(255,255,255,.15);border-radius:10px;padding:12px 24px;font-size:18px;font-weight:700}
 @keyframes fi{from{opacity:0}to{opacity:1}}
 
+/* ── AUTOSAVE INDICATOR ── */
+.autosave-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+.autosave-dot.saved{background:#2D6A4F}
+.autosave-dot.saving{background:#F4A261;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── RECOVERY BANNER ── */
+.recovery-banner{background:linear-gradient(135deg,#FFFBEB,#FEF3C7);border:1px solid #F59E0B;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center}
+.recovery-banner h3{color:#92400E;font-size:16px;margin-bottom:8px}
+.recovery-banner p{color:#78350F;font-size:13px;margin-bottom:14px;line-height:1.6}
+.recovery-banner .btn-group{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+
 /* ── REVIEW ── */
 .pbox{background:#F8FAFB;border:1px solid #E0E4EA;border-radius:10px;padding:20px;font-size:14px;line-height:1.8;white-space:pre-wrap;color:#2D3748;max-height:300px;overflow-y:auto}
 .ebox-essay{font-family:'Georgia',serif;line-height:2;min-height:200px;white-space:pre-wrap}
@@ -217,7 +229,16 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
     <div class="p0-card">
       <h2>Welcome!</h2>
       <div class="sub">Which device are you using?</div>
-      <div class="dv-group">
+      <!-- Recovery banner (shown if saved session found) -->
+      <div id="recoveryBanner" class="recovery-banner hidden">
+        <h3>📝 Unfinished exam found!</h3>
+        <p id="recoveryInfo">You have a saved session. Would you like to resume?</p>
+        <div class="btn-group">
+          <button class="btn btn-ok" onclick="recoverSession()" style="padding:10px 24px;font-size:14px">▶ Resume Exam</button>
+          <button class="btn btn-s" onclick="discardRecovery()">✕ Discard & Start New</button>
+        </div>
+      </div>
+      <div class="dv-group" id="deviceGroup">
         <button class="dv-btn" onclick="pickDevice('pc')">
           <div class="dv-icon">💻</div>
           <b>PC / Laptop</b>
@@ -249,6 +270,7 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
         <b>⚠ Before you start:</b><br>
         • Switching tabs or opening other pages will be recorded<br>
         • The exam auto-submits when time runs out<br>
+        • Your essay is auto-saved every 10 seconds<br>
         • Your report will be downloaded and submitted automatically when you finish
       </div>
       <div style="margin-bottom:16px">
@@ -331,6 +353,7 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
       <div><div class="hdr-t">IELTS Writing Lab</div><div class="hdr-s" id="exSub">Task 1</div></div>
     </div>
     <div class="hdr-r">
+      <span id="autoSaveInd" style="font-size:11px;opacity:.7;display:flex;align-items:center"><span class="autosave-dot saved"></span>Saved</span>
       <span id="vBdg" class="bg bg-v hidden">⚠ <span id="vCntH">0</span> violation(s)</span>
       <div class="td"><span style="font-size:14px">⏱</span><span class="tt" id="clock">20:00</span></div>
       <button class="btn btn-d" onclick="doSubmit()" style="padding:8px 18px;font-size:13px">Submit ■</button>
@@ -476,18 +499,386 @@ var TK={task1:{l:'Task 1',t:20,w:150,d:'Academic / General Training'},task2:{l:'
 var S={task:'task1',img:null,imgT1:null,name:'',cls:'',prompt:'',prompt2:'',essay:'',essay2:'',tl:0,total:0,run:false,t0:null,vio:[],snaps:[],ti:null,si:null,url:'',device:'pc'};
 var vioNum=0,lastLeaveTs=0,imgZoom=100,activeTab=1;
 
+/* ═══ AUTOSAVE CONFIG ═══ */
+var AUTOSAVE_KEY='ielts_writing_lab_session';
+var AUTOSAVE_SUBMITTED_KEY='ielts_writing_lab_submitted';
+var autosaveInterval=null;
+var AUTOSAVE_MS=5000; /* save every 5 seconds */
+var driveFileId=null; /* Google Doc file ID — set after create */
+
 function $(id){return document.getElementById(id)}
 function D(id,v){$(id).classList.toggle('hidden',!v)}
 function fmt(s){return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
 function wc(t){return t.trim().split(/\s+/).filter(Boolean).length}
 function ts(d){return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 
+/* ═══════════════════════════════════════════
+   PERSISTENT STORAGE LAYER
+   Cookie-first (survives Safari iOS tab close)
+   localStorage as secondary write
+   Chunked cookies: each ≤3800 bytes to stay under 4KB limit
+   ═══════════════════════════════════════════ */
+var CHUNK_SIZE=3800;
+var COOKIE_PREFIX='iwl_';
+var COOKIE_DAYS=1; /* expire after 1 day */
+
+function setCookie(name,val,days){
+  var d=new Date();d.setTime(d.getTime()+days*86400000);
+  var ex='expires='+d.toUTCString();
+  document.cookie=name+'='+encodeURIComponent(val)+';'+ex+';path=/;SameSite=Lax';
+}
+function getCookie(name){
+  var prefix=name+'=';
+  var parts=document.cookie.split(';');
+  for(var i=0;i<parts.length;i++){
+    var c=parts[i].trim();
+    if(c.indexOf(prefix)===0)return decodeURIComponent(c.substring(prefix.length));
+  }
+  return null;
+}
+function deleteCookie(name){
+  document.cookie=name+'=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;SameSite=Lax';
+}
+
+/* Write chunked cookies: iwl_0, iwl_1, iwl_2... + iwl_n = chunk count */
+function persistSet(key,jsonStr){
+  /* 1) Cookie — chunked */
+  try{
+    var prefix=COOKIE_PREFIX+key+'_';
+    /* Clear old chunks first */
+    var oldN=parseInt(getCookie(prefix+'n'))||0;
+    for(var i=0;i<oldN;i++) deleteCookie(prefix+i);
+    /* Write new chunks */
+    var chunks=[];
+    for(var i=0;i<jsonStr.length;i+=CHUNK_SIZE){
+      chunks.push(jsonStr.substring(i,i+CHUNK_SIZE));
+    }
+    for(var i=0;i<chunks.length;i++){
+      setCookie(prefix+i,chunks[i],COOKIE_DAYS);
+    }
+    setCookie(prefix+'n',String(chunks.length),COOKIE_DAYS);
+  }catch(e){}
+  /* 2) localStorage — secondary */
+  try{localStorage.setItem(AUTOSAVE_KEY,jsonStr)}catch(e){}
+}
+
+function persistGet(key){
+  /* Try cookie first */
+  try{
+    var prefix=COOKIE_PREFIX+key+'_';
+    var n=parseInt(getCookie(prefix+'n'))||0;
+    if(n>0){
+      var parts=[];
+      for(var i=0;i<n;i++){
+        var chunk=getCookie(prefix+i);
+        if(chunk===null){n=0;break}
+        parts.push(chunk);
+      }
+      if(parts.length===n&&n>0) return parts.join('');
+    }
+  }catch(e){}
+  /* Fallback to localStorage */
+  try{return localStorage.getItem(AUTOSAVE_KEY)}catch(e){}
+  return null;
+}
+
+function persistDelete(key){
+  /* Clear cookies */
+  try{
+    var prefix=COOKIE_PREFIX+key+'_';
+    var n=parseInt(getCookie(prefix+'n'))||0;
+    for(var i=0;i<n;i++) deleteCookie(prefix+i);
+    deleteCookie(prefix+'n');
+  }catch(e){}
+  /* Clear localStorage */
+  try{localStorage.removeItem(AUTOSAVE_KEY)}catch(e){}
+}
+
+/* Small single-value persist (for driveFileId, submitted flag) */
+function persistSetSmall(name,val){
+  try{setCookie(COOKIE_PREFIX+name,val,COOKIE_DAYS)}catch(e){}
+  try{localStorage.setItem(name,val)}catch(e){}
+}
+function persistGetSmall(name){
+  try{var v=getCookie(COOKIE_PREFIX+name);if(v)return v}catch(e){}
+  try{return localStorage.getItem(name)}catch(e){}
+  return null;
+}
+function persistDeleteSmall(name){
+  try{deleteCookie(COOKIE_PREFIX+name)}catch(e){}
+  try{localStorage.removeItem(name)}catch(e){}
+}
+
+/* ═══════════════════════════════════════════
+   AUTOSAVE SYSTEM
+   ═══════════════════════════════════════════ */
+function autosaveState(){
+  if(!S.run)return;
+  /* Sync textarea values */
+  var ta1=$('essayTA'),ta2=$('essayTA2');
+  if(ta1)S.essay=ta1.value||S.essay;
+  if(ta2&&ta2.style.display!=='none')S.essay2=ta2.value||S.essay2;
+
+  /* ── Cookie: essay text + minimal metadata only ── */
+  var cookieObj={
+    task:S.task, name:S.name, cls:S.cls,
+    essay:S.essay, essay2:S.essay2,
+    tl:S.tl, total:S.total,
+    t0:S.t0?S.t0.toISOString():null,
+    vioNum:vioNum, device:S.device,
+    activeTab:activeTab,
+    savedAt:new Date().toISOString()
+  };
+  persistSet('s',JSON.stringify(cookieObj));
+
+  /* ── localStorage: full data (prompt, snaps, vio, img) ── */
+  try{
+    var fullObj={
+      task:S.task, name:S.name, cls:S.cls,
+      prompt:S.prompt, prompt2:S.prompt2,
+      essay:S.essay, essay2:S.essay2,
+      tl:S.tl, total:S.total,
+      t0:S.t0?S.t0.toISOString():null,
+      vio:S.vio, snaps:S.snaps,
+      vioNum:vioNum, device:S.device,
+      img:S.img, activeTab:activeTab,
+      savedAt:new Date().toISOString()
+    };
+    localStorage.setItem(AUTOSAVE_KEY,JSON.stringify(fullObj));
+  }catch(e){}
+
+  showAutosaveStatus('saved');
+}
+
+function showAutosaveStatus(status){
+  var ind=$('autoSaveInd');
+  if(!ind)return;
+  if(status==='saving'){
+    ind.innerHTML='<span class="autosave-dot saving"></span>Saving...';
+  } else {
+    ind.innerHTML='<span class="autosave-dot saved"></span>Saved';
+  }
+}
+
+function clearAutosave(){
+  persistDelete('s');
+}
+
+function getSavedSession(){
+  try{
+    var raw=persistGet('s');
+    if(!raw)return null;
+    var obj=JSON.parse(raw);
+    /* Check if this session was already submitted */
+    var submitted=persistGetSmall(AUTOSAVE_SUBMITTED_KEY);
+    if(submitted){
+      var subData=JSON.parse(submitted);
+      if(subData.t0===obj.t0){
+        /* Already submitted — clear and ignore */
+        clearAutosave();
+        persistDeleteSmall(AUTOSAVE_SUBMITTED_KEY);
+        return null;
+      }
+    }
+    /* Check if session is stale (older than 4 hours) */
+    if(obj.savedAt){
+      var age=Date.now()-new Date(obj.savedAt).getTime();
+      if(age>4*60*60*1000){clearAutosave();return null}
+    }
+    return obj;
+  }catch(e){return null}
+}
+
+function startAutosave(){
+  if(autosaveInterval)clearInterval(autosaveInterval);
+  autosaveInterval=setInterval(function(){
+    showAutosaveStatus('saving');
+    autosaveState();
+  },AUTOSAVE_MS);
+  /* Also start draft sync to Drive */
+  startDraftSync();
+}
+
+function stopAutosave(){
+  if(autosaveInterval){clearInterval(autosaveInterval);autosaveInterval=null}
+  stopDraftSync();
+}
+
+/* ═══════════════════════════════════════════
+   DRAFT SYNC TO DRIVE
+   One-time snapshot at a fixed minute mark:
+   Task 1 → minute 15 | Task 2 → minute 35 | Full → minute 55
+   ═══════════════════════════════════════════ */
+var draftSyncDone=false;
+var DRAFT_SYNC_MINUTE={task1:15,task2:35,full:55};
+
+function startDraftSync(){ draftSyncDone=false; }
+function stopDraftSync(){}
+
+function checkDraftSync(){
+  if(draftSyncDone||!S.run||!S.url||!driveFileId)return;
+  var elapsed=Math.floor((S.total-S.tl)/60); /* minutes spent */
+  var target=DRAFT_SYNC_MINUTE[S.task];
+  if(typeof target==='undefined'||elapsed<target)return;
+  draftSyncDone=true;
+  syncDraftToDrive();
+}
+
+function syncDraftToDrive(){
+  if(!S.run||!S.url||!driveFileId)return;
+  /* Sync textarea values */
+  var ta1=$('essayTA'),ta2=$('essayTA2');
+  if(ta1)S.essay=ta1.value||S.essay;
+  if(ta2&&ta2.style.display!=='none')S.essay2=ta2.value||S.essay2;
+
+  var tk=TK[S.task],isFull=S.task==='full';
+  var payload={
+    action:'update',
+    fileId:driveFileId,
+    studentName:S.name,
+    className:S.cls,
+    taskType:tk.l,
+    date:S.t0?S.t0.toLocaleDateString('en-GB'):'',
+    time:S.t0?S.t0.toLocaleTimeString('en-GB'):'',
+    timeLeft:fmt(S.tl),
+    timeSpent:fmt(S.total-S.tl),
+    wordCount1:wc(S.essay),
+    wordCount2:isFull?wc(S.essay2):0,
+    violations:vioNum,
+    essay1:S.essay||'(No content)',
+    essay2:isFull?(S.essay2||'(No content)'):'',
+    prompt1:S.prompt||'',
+    prompt2:isFull?(S.prompt2||''):'',
+    savedAt:new Date().toISOString()
+  };
+
+  /* Use sendBeacon — fire and forget, won't block UI */
+  try{
+    navigator.sendBeacon(S.url,JSON.stringify(payload));
+    showAutosaveStatus('saved');
+  }catch(e){
+    try{
+      fetch(S.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload)});
+    }catch(e2){}
+  }
+}
+
+/* ═══ RECOVERY — check on page load ═══ */
+var recoveryChecked=false;
+function checkRecovery(){
+  if(recoveryChecked)return;
+  var saved=getSavedSession();
+  if(!saved||!saved.name||!saved.t0)return;
+  recoveryChecked=true;
+  /* Show recovery banner */
+  var info='Student: '+saved.cls+' — '+saved.name+' | '+TK[saved.task].l+' | Time left: '+fmt(saved.tl)+' | Words: '+wc(saved.essay||'');
+  if(saved.task==='full')info+=' (T1) / '+wc(saved.essay2||'')+' (T2)';
+  $('recoveryInfo').textContent=info;
+  D('recoveryBanner',1);
+}
+
+function recoverSession(){
+  var saved=getSavedSession();
+  if(!saved)return;
+
+  /* Restore state */
+  S.task=saved.task;S.name=saved.name;S.cls=saved.cls;
+  S.prompt=saved.prompt||S.prompt||'';S.prompt2=saved.prompt2||S.prompt2||'';
+  S.essay=saved.essay||'';S.essay2=saved.essay2||'';
+  S.tl=saved.tl;S.total=saved.total;
+  S.t0=saved.t0?new Date(saved.t0):new Date();
+  S.vio=saved.vio||[];S.snaps=saved.snaps||[];
+  S.device=saved.device||'pc';S.img=saved.img||null;
+  vioNum=saved.vioNum||0;
+  activeTab=saved.activeTab||1;
+  S.url=SUBMIT_URL;S.run=true;
+  /* Restore driveFileId if available */
+  try{driveFileId=persistGetSmall('ielts_drive_file_id')||null}catch(e){}
+
+  /* If time already expired, submit immediately */
+  if(S.tl<=0){
+    S.tl=0;
+    D('P0',0);D('P2',1);
+    document.body.style.background='#E8ECF0';
+    doSubmit();
+    return;
+  }
+
+  /* Show exam UI */
+  D('P0',0);D('P2',1);
+  document.body.style.background='#E8ECF0';
+  var tk=TK[S.task],isFull=S.task==='full',isMobile=S.device==='mobile';
+
+  if(isMobile)$('P2').classList.add('mobile-mode');
+
+  $('exSub').textContent=tk.l+' — '+S.cls+' — '+S.name;
+
+  if(isFull){
+    $('pTabs').className='extabs on';$('eTabs').className='extabs on';
+    $('exHdrSingle').style.display='none';$('exEssHdrSingle').style.display='none';
+    $('exPrompt').textContent=S.prompt;$('exPrompt2').textContent=S.prompt2;
+    $('essayTA').value=S.essay;$('essayTA2').value=S.essay2;
+    $('essayTA').style.display=activeTab===1?'block':'none';
+    $('essayTA2').style.display=activeTab===2?'block':'none';
+    $('ptab1').className='extab'+(activeTab===1?' on':'');
+    $('ptab2').className='extab'+(activeTab===2?' on':'');
+    $('etab1').className='extab'+(activeTab===1?' on':'');
+    $('etab2').className='extab'+(activeTab===2?' on':'');
+    $('promptArea1').className='ex-prompt-area ftc'+(activeTab===1?' on':'');
+    $('promptArea2').className='ex-prompt-area ftc'+(activeTab===2?' on':'');
+  } else {
+    $('pTabs').className='extabs';$('eTabs').className='extabs';
+    if(isMobile){$('exHdrSingle').style.display='none'}else{$('exHdrSingle').style.display='';$('exLbl').textContent='📝 Prompt — '+tk.l}
+    $('exEssHdrSingle').style.display='';
+    $('exPrompt').textContent=S.prompt;
+    $('essayTA').value=S.essay;$('essayTA').style.display='block';
+    $('essayTA2').style.display='none';
+  }
+
+  if(S.img){
+    $('exImgEl').src=S.img;$('exImgEl').style.width='100%';
+    $('exImgBox').classList.remove('hidden');$('exZoomBar').classList.remove('hidden');
+    $('zoomLbl').textContent='100%';imgZoom=100;
+  }
+
+  if(vioNum>0){D('vBdg',1);$('vCntH').textContent=vioNum}
+  /* Add a recovery violation note */
+  S.vio.push({time:new Date(),t:'returned',n:0,l:'Session recovered at '+ts(new Date())});
+
+  updClock();updWC();
+  S.ti=setInterval(function(){S.tl--;updClock();checkDraftSync();if(S.tl<=0)doSubmit()},1000);
+  S.si=setInterval(snap,30000);
+  startAutosave();
+  requestWakeLock();
+
+  $('essayTA').oninput=function(){S.essay=this.value;updWC()};
+  $('essayTA2').oninput=function(){S.essay2=this.value;updWC()};
+
+  setTimeout(function(){
+    document.addEventListener('visibilitychange',onVis);
+    window.addEventListener('blur',onBlur);
+  },1500);
+  setTimeout(function(){(activeTab===1?$('essayTA'):$('essayTA2')).focus()},200);
+}
+
+function discardRecovery(){
+  clearAutosave();
+  D('recoveryBanner',0);
+}
+
+/* Check on load — use multiple events for reliability on mobile */
+window.addEventListener('DOMContentLoaded',checkRecovery);
+window.addEventListener('load',function(){
+  /* Delayed re-check in case DOMContentLoaded didn't fire properly on mobile */
+  setTimeout(checkRecovery,500);
+});
+
+
 /* ═══ DEVICE SELECT ═══ */
 function pickDevice(d){
   S.device=d;
   D('P0',0);D('P1',1);
   if(d==='mobile'){
-    /* Hide all prompt input sections */
     $('singlePromptBox').style.display='none';
     $('singleImgBox').style.display='none';
     $('fullPromptBox').style.display='none';
@@ -500,12 +891,10 @@ function pickTask(t){
   document.querySelectorAll('.tb').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)});
   var isFull=t==='full';
   if(S.device==='mobile'){
-    /* Mobile: always hide all prompt inputs */
     $('singlePromptBox').style.display='none';
     $('singleImgBox').style.display='none';
     $('fullPromptBox').style.display='none';
   } else {
-    /* PC: show/hide prompt inputs based on task */
     $('singlePromptBox').style.display=isFull?'none':'';
     $('singleImgBox').style.display=(isFull||t==='task2')?'none':'';
     $('fullPromptBox').style.display=isFull?'':'none';
@@ -528,7 +917,6 @@ function clearImg(){
   $('ipBox').style.display='none';$('rmImg').style.display='none';$('inImg').value='';chk();
 }
 
-/* Full Test Task 1 image */
 $('inImgT1').onchange=function(e){
   var f=e.target.files[0];if(!f)return;
   var r=new FileReader();
@@ -548,14 +936,12 @@ function clearImgT1(){
 function chk(){
   var ok=$('inClass').value&&$('inName').value.trim();
   if(S.device!=='mobile'){
-    /* PC mode: require prompts */
     if(S.task==='full'){
       ok=ok&&($('inPromptT1').value.trim()||S.imgT1)&&$('inPromptT2').value.trim();
     } else {
       ok=ok&&($('inPrompt').value.trim()||S.img);
     }
   }
-  /* Mobile mode: only need class + name */
   $('goBtn').disabled=!ok;
 }
 $('inName').oninput=chk;
@@ -581,7 +967,6 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeZoom()}
 
 /* ═══ TAB SWITCHING (Full Test) ═══ */
 function switchTab(n){
-  /* Save current tab's essay before switching */
   if(activeTab===1)S.essay=$('essayTA').value;
   if(activeTab===2)S.essay2=$('essayTA2').value;
   activeTab=n;
@@ -591,10 +976,8 @@ function switchTab(n){
   $('etab2').className='extab'+(n===2?' on':'');
   $('promptArea1').className='ex-prompt-area ftc'+(n===1?' on':'');
   $('promptArea2').className='ex-prompt-area ftc'+(n===2?' on':'');
-  /* Toggle textareas - must use block, not empty string */
   $('essayTA').style.display=n===1?'block':'none';
   $('essayTA2').style.display=n===2?'block':'none';
-  /* Restore saved content into textarea (safety net) */
   if(n===1)$('essayTA').value=S.essay;
   if(n===2)$('essayTA2').value=S.essay2;
   updWC();
@@ -624,6 +1007,37 @@ function switchTab(n){
   });
 })();
 
+/* ═══════════════════════════════════════════
+   CREATE FILE ON DRIVE — called at exam start
+   ═══════════════════════════════════════════ */
+function createDriveFile(){
+  if(!S.url)return;
+  var tk=TK[S.task];
+  var dd=String(S.t0.getDate()).padStart(2,'0'),mm=String(S.t0.getMonth()+1).padStart(2,'0'),yy=String(S.t0.getFullYear()).slice(2);
+  var payload={
+    action:'create',
+    studentName:S.name,
+    className:S.cls,
+    taskType:tk.l,
+    shortDate:dd+'-'+mm+'-'+yy,
+    date:S.t0.toLocaleDateString('en-GB'),
+    time:S.t0.toLocaleTimeString('en-GB')
+  };
+  fetch(S.url,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload)})
+  .then(function(r){return r.json()})
+  .then(function(resp){
+    if(resp.fileId){
+      driveFileId=resp.fileId;
+      /* Save fileId for recovery */
+      try{persistSetSmall('ielts_drive_file_id',driveFileId)}catch(e){}
+    }
+  })
+  .catch(function(err){
+    /* If create fails (e.g. offline), will fallback to legacy submit later */
+    console.log('Drive create failed, will use legacy submit:',err);
+  });
+}
+
 /* ═══ START ═══ */
 function go(){
   S.name=$('inName').value.trim();
@@ -633,13 +1047,11 @@ function go(){
   var isMobile=S.device==='mobile';
 
   if(isMobile){
-    /* Mobile: no prompts needed */
     S.prompt='(Mobile — prompt provided separately by teacher)';
     S.prompt2=isFull?'(Mobile — prompt provided separately by teacher)':'';
     S.img=null;S.imgT1=null;
     if(!S.cls||!S.name)return;
   } else {
-    /* PC: read prompts as usual */
     if(isFull){
       S.prompt=$('inPromptT1').value.trim();
       S.prompt2=$('inPromptT2').value.trim();
@@ -664,11 +1076,9 @@ function go(){
   D('P1',0);D('P2',1);
   document.body.style.background='#E8ECF0';
 
-  /* Apply mobile mode class */
   if(isMobile){
     $('P2').classList.add('mobile-mode');
     $('exHdrSingle').style.display='none';
-    /* For mobile single task: show a simple header on the essay side */
     if(!isFull){
       $('exEssHdrSingle').style.display='';
       $('pTabs').className='extabs';
@@ -679,20 +1089,17 @@ function go(){
   $('exSub').textContent=tk.l+' — '+S.cls+' — '+S.name;
 
   if(isFull){
-    /* Full test: show tabs, hide single headers */
     $('pTabs').className='extabs on';
     $('eTabs').className='extabs on';
     $('exHdrSingle').style.display='none';
     $('exEssHdrSingle').style.display='none';
     $('exPrompt').textContent=S.prompt;
     $('exPrompt2').textContent=S.prompt2;
-    /* Show Task 1 textarea, hide Task 2 */
     $('essayTA').style.display='block';
     $('essayTA2').style.display='none';
     $('promptArea1').className='ex-prompt-area ftc on';
     $('promptArea2').className='ex-prompt-area ftc';
   } else {
-    /* Single task: hide tabs, show single headers */
     $('pTabs').className='extabs';
     $('eTabs').className='extabs';
     $('exHdrSingle').style.display='';
@@ -714,8 +1121,10 @@ function go(){
   }
 
   updClock();updWC();snap();
-  S.ti=setInterval(function(){S.tl--;updClock();if(S.tl<=0)doSubmit()},1000);
+  S.ti=setInterval(function(){S.tl--;updClock();checkDraftSync();if(S.tl<=0)doSubmit()},1000);
   S.si=setInterval(snap,30000);
+  startAutosave(); /* ← Start autosave */
+  createDriveFile(); /* ← Create file on Drive */
   setTimeout(function(){$('essayTA').focus()},200);
 
   $('essayTA').oninput=function(){S.essay=this.value;updWC()};
@@ -724,6 +1133,8 @@ function go(){
     document.addEventListener('visibilitychange',onVis);
     window.addEventListener('blur',onBlur);
   },1500);
+
+  requestWakeLock();
 }
 
 /* ═══ MONITORING ═══ */
@@ -739,12 +1150,14 @@ function recordLeave(){
 function onVis(){
   if(!S.run)return;
   if(document.hidden){recordLeave()}
-  else{S.vio.push({time:new Date(),t:'returned',n:0,l:'Returned at '+ts(new Date())})}
+  else{
+    S.vio.push({time:new Date(),t:'returned',n:0,l:'Returned at '+ts(new Date())});
+    requestWakeLock(); /* re-acquire wake lock */
+  }
 }
 function onBlur(){if(!S.run)return;recordLeave()}
 function warn(){$('warnN').textContent=vioNum;D('warnOL',1)}
 function snap(){
-  /* Always sync textarea values to state */
   var ta1=$('essayTA'),ta2=$('essayTA2');
   if(ta1&&ta1.value)S.essay=ta1.value;
   if(ta2&&ta2.value)S.essay2=ta2.value;
@@ -779,24 +1192,85 @@ function updClock(){
 function updVio(){if(vioNum>0){D('vBdg',1);$('vCntH').textContent=vioNum}}
 
 /* ═══ SUBMIT ═══ */
+var isSubmitting=false; /* prevent double submit */
+
 function doSubmit(){
-  if(!S.run)return;
+  if(!S.run||isSubmitting)return;
+  isSubmitting=true;
   /* Always save current active tab first */
   if(activeTab===1)S.essay=$('essayTA').value;
   if(activeTab===2)S.essay2=$('essayTA2').value;
-  /* Then read both textareas (fallback: use S.essay/S.essay2 if textarea value is empty but S has content) */
   var ta1=$('essayTA').value,ta2=$('essayTA2').value;
   S.essay=ta1||S.essay;
   S.essay2=ta2||S.essay2;
   snap();
   clearInterval(S.ti);clearInterval(S.si);S.run=false;
+  stopAutosave();
   releaseWakeLock();
   document.removeEventListener('visibilitychange',onVis);
   window.removeEventListener('blur',onBlur);
+  /* Mark as submitted so recovery won't re-trigger */
+  try{persistSetSmall(AUTOSAVE_SUBMITTED_KEY,JSON.stringify({t0:S.t0?S.t0.toISOString():''}))}catch(e){}
+  try{persistDeleteSmall('ielts_drive_file_id')}catch(e){}
+  clearAutosave();
   review();
-  /* Auto-download report + submit to Drive */
   setTimeout(function(){exportAndSubmit()},500);
 }
+
+/* ═══════════════════════════════════════════
+   EMERGENCY SUBMIT — beforeunload / pagehide
+   Submit data when browser/tab is closing
+   ═══════════════════════════════════════════ */
+function emergencySubmit(){
+  if(!S.run)return;
+  /* Sync latest essay content */
+  var ta1=$('essayTA'),ta2=$('essayTA2');
+  if(ta1)S.essay=ta1.value||S.essay;
+  if(ta2)S.essay2=ta2.value||S.essay2;
+  snap();
+
+  /* Save to cookie+localStorage so it can be recovered or retried */
+  autosaveState();
+
+  /* Use sendBeacon for reliable submission even when page is closing */
+  if(S.url&&navigator.sendBeacon){
+    var wasRunning=S.run;
+    S.run=false;
+    var rd=rdata();
+    rd.action='final';
+    rd.fileId=driveFileId||null;
+    var payload=JSON.stringify(rd);
+    S.run=wasRunning;
+    try{
+      navigator.sendBeacon(S.url,payload);
+    }catch(e){}
+  }
+}
+
+window.addEventListener('beforeunload',function(e){
+  if(S.run){
+    emergencySubmit();
+    /* Show browser's "are you sure?" dialog */
+    e.preventDefault();
+    e.returnValue='Your exam is still in progress! Are you sure you want to leave?';
+    return e.returnValue;
+  }
+});
+
+/* pagehide fires more reliably on mobile Safari */
+window.addEventListener('pagehide',function(e){
+  if(S.run){
+    emergencySubmit();
+  }
+});
+
+/* Also handle mobile "freeze" events where available */
+if('onfreeze' in document){
+  document.addEventListener('freeze',function(){
+    if(S.run)emergencySubmit();
+  });
+}
+
 
 /* ═══ REVIEW ═══ */
 function review(){
@@ -889,15 +1363,12 @@ function rdata(){
       return fmt(sn.time)+' | '+sn.words+' words | '+(d>=0?'+':'')+d+extra;
     }).join('\n'),
     hasImage:!!S.img,
-    /* Always send essay1/prompt1/wordCount1 — this is what Apps Script reads */
     essay1:S.essay||'(No content)',
     prompt1:S.prompt||'',
     wordCount1:w,
-    /* Always send essay2/prompt2/wordCount2 */
     essay2:isFull?(S.essay2||'(No content)'):'(N/A — single task)',
     prompt2:isFull?(S.prompt2||''):'',
     wordCount2:isFull?wc(S.essay2):0,
-    /* Legacy fields for backward compat */
     essay:S.essay||'(No content)',
     prompt:S.prompt||''
   };
@@ -958,19 +1429,22 @@ function exportDoc(){
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');a.href=url;
   var dd=String(S.t0.getDate()).padStart(2,'0'),mm=String(S.t0.getMonth()+1).padStart(2,'0'),yy=String(S.t0.getFullYear()).slice(2);
-  a.download=dd+'-'+mm+'-'+yy+'_'+r.className+'_'+r.studentName.replace(/\s+/g,'_')+'_'+r.taskType.replace(' ','')+'.doc';
+  a.download=dd+'-'+mm+'-'+yy+'_'+r.className+'_'+r.studentName.replace(/\s+/g,'_')+'_'+r.taskType.replace(' ','')+'_FINAL.doc';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
 /* ═══ SUBMIT TO DRIVE (with auto-retry) ═══ */
-var driveRetryTimer=null,driveRetryCount=0,driveMaxRetries=120; /* retry up to ~30 min */
-var driveData=null; /* cache data for retries */
+var driveRetryTimer=null,driveRetryCount=0,driveMaxRetries=120;
+var driveData=null;
 
 function submitToDrive(){
   if(!S.url)return;
   driveRetryCount=0;
-  driveData=JSON.stringify(rdata());
+  var rd=rdata();
+  rd.action='final';
+  rd.fileId=driveFileId||null;
+  driveData=JSON.stringify(rd);
   attemptDriveSubmit();
 }
 
@@ -980,7 +1454,6 @@ function attemptDriveSubmit(){
   var retryMsg=driveRetryCount>1?' (attempt '+driveRetryCount+')':'';
   $('subSt').innerHTML='<div class="ss ss-load">⏳ Submitting to teacher...'+retryMsg+'</div>';
 
-  /* Check if offline first */
   if(!navigator.onLine){
     scheduleRetry('You appear to be offline');
     return;
@@ -988,7 +1461,6 @@ function attemptDriveSubmit(){
 
   fetch(S.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:driveData})
   .then(function(){
-    /* mode:'no-cors' → opaque response; if fetch resolved, request was sent */
     $('subSt').innerHTML='<div class="ss ss-ok">✅ Report downloaded & submitted to teacher successfully!</div>';
     if(driveRetryTimer){clearTimeout(driveRetryTimer);driveRetryTimer=null}
     driveData=null;
@@ -1009,7 +1481,6 @@ function scheduleRetry(reason){
   driveRetryTimer=setTimeout(attemptDriveSubmit,delay);
 }
 
-/* Also retry when coming back online */
 window.addEventListener('online',function(){
   if(driveData&&driveRetryTimer){
     clearTimeout(driveRetryTimer);
@@ -1042,12 +1513,10 @@ function releaseWakeLock(){
   if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null}
 }
 
-/* Re-acquire wake lock when tab becomes visible again */
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='visible'&&S.run){requestWakeLock()}
 });
 
-/* Request on page load */
 requestWakeLock();
 </script>
 </body>
