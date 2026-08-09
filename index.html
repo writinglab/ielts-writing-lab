@@ -492,10 +492,12 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
 
 <script>
 /* ═══════════════════════════════════════════════════════════
-   TEACHER CONFIG — Paste your Google Apps Script URL below.
-   Leave blank '' if not using auto-submission.
+   CẤU HÌNH GIÁO VIÊN
+   ⬇ DÁN LINK /exec MỚI VÀO GIỮA 2 DẤU NHÁY sau khi cài Apps Script (Bước 2).
+   Để trống '' thì tool vẫn chạy bình thường, chỉ KHÔNG tự đẩy lên Drive
+   (báo cáo .doc vẫn tải về máy/điện thoại như thường).
    ═══════════════════════════════════════════════════════════ */
-var SUBMIT_URL = 'https://script.google.com/macros/s/AKfycbydBkHZ4HRkOaCYIx2yOzN9Cqpsf8HcjezipYBSFqDtGNuIsrMFuhWGIdKaXvhaVvid/exec';
+var SUBMIT_URL = '';
 
 /* ═══ CONFIG ═══ */
 var TK={task1:{l:'Task 1',t:20,w:150,d:'Academic / General Training'},task2:{l:'Task 2',t:40,w:250,d:'Essay'},full:{l:'Full Test',t:60,w:150,d:'Task 1 + Task 2'}};
@@ -946,11 +948,27 @@ function switchTab(n){
   });
 })();
 
-/* ═══════════════════════════════════════════
-   CREATE FILE ON DRIVE — called at exam start
-   ═══════════════════════════════════════════ */
+/* ═══ HEALTH CHECK (JSONP) — kiểm tra endpoint trước khi thi ═══ */
+function healthCheck(cb){
+  if(!SUBMIT_URL){cb(true,'no-endpoint');return;}
+  var cbName='__iwlHC_'+Date.now();
+  var done=false;
+  var script=document.createElement('script');
+  var timer=setTimeout(function(){finish(false,'timeout')},8000);
+  function finish(ok,reason){
+    if(done)return;done=true;
+    clearTimeout(timer);
+    try{delete window[cbName]}catch(e){window[cbName]=undefined}
+    if(script.parentNode)script.parentNode.removeChild(script);
+    cb(ok,reason);
+  }
+  window[cbName]=function(data){finish(!!(data&&data.ok),'ok')};
+  script.onerror=function(){finish(false,'error')};
+  script.src=SUBMIT_URL+(SUBMIT_URL.indexOf('?')>-1?'&':'?')+'health=1&callback='+cbName+'&t='+Date.now();
+  document.head.appendChild(script);
+}
 
-/* ═══ START ═══ */
+/* ═══ START — chạy health check rồi mới vào thi ═══ */
 function go(){
   S.name=$('inName').value.trim();
   S.cls=$('inClass').value;
@@ -979,11 +997,39 @@ function go(){
   var tk=TK[S.task],ct=$('inTime').value;
   var mins=ct?parseInt(ct):tk.t;
   S.total=mins*60;S.tl=S.total;
-  S.t0=new Date();S.vio=[];S.snaps=[];S.essay='';S.essay2='';
+  S.vio=[];S.snaps=[];S.essay='';S.essay2='';
   vioNum=0;lastLeaveTs=0;imgZoom=100;activeTab=1;
+
+  /* ── Health check trước khi vào thi ── */
+  var btn=$('goBtn');
+  if(!SUBMIT_URL){beginExam(mins);return;} /* không dùng auto-submit thì bỏ qua */
+  btn.disabled=true;
+  var oldTxt=btn.innerHTML;
+  btn.innerHTML='⏳ Đang kiểm tra kết nối tới server...';
+  healthCheck(function(alive,reason){
+    btn.disabled=false;
+    btn.innerHTML=oldTxt;
+    if(alive){
+      beginExam(mins);
+    } else {
+      alert('⚠ KHÔNG KẾT NỐI ĐƯỢC TỚI SERVER NỘP BÀI\n\n'+
+        'Nếu vào thi lúc này, bài làm sẽ KHÔNG tự động lên Drive.\n\n'+
+        'Nguyên nhân thường gặp:\n'+
+        '• Link deployment đã đổi/hết hạn → cần Deploy lại bản mới\n'+
+        '• Chưa đặt "Who has access = Anyone" khi deploy\n\n'+
+        'Kiểm tra lại Apps Script rồi bấm Start lại.\n'+
+        '(Mã lỗi: '+reason+')');
+    }
+  });
+}
+
+/* ═══ Khởi động thi thật sự (chỉ chạy khi endpoint OK hoặc không dùng auto-submit) ═══ */
+function beginExam(mins){
+  var tk=TK[S.task],isFull=S.task==='full',isMobile=S.device==='mobile';
 
   if(!confirm('Start '+tk.l+' exam?\nTime: '+mins+' minutes\n\nYou cannot go back after starting!'))return;
 
+  S.t0=new Date();
   S.run=true;
   D('P1',0);D('P2',1);
   document.body.style.background='#E8ECF0';
