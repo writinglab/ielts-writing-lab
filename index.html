@@ -484,8 +484,10 @@ textarea{width:100%;border:2px solid #E0E4EA;border-radius:10px;padding:14px 16p
       </div>
       <div class="pbox ebox-essay" id="rEss2"></div>
     </div>
-    <div class="fc g12 mt8 fw">
-      <div id="subSt"></div>
+    <div id="subSt"></div>
+    <div class="fc g12 mt12 fw" style="margin-bottom:24px">
+      <button class="btn btn-ok" onclick="exportDoc()">⬇ Download report (.doc)</button>
+      <button class="btn btn-s" onclick="newExam()">↻ New exam</button>
     </div>
   </div>
 </div>
@@ -709,6 +711,8 @@ function stopAutosave(){
 var recoveryChecked=false;
 function checkRecovery(){
   if(recoveryChecked)return;
+  /* Nếu vừa nộp bài trong tab này (VD: ấn "Xem" trên iPhone rồi Back) → hiện lại trang tổng kết */
+  if(restoreLastReport()){recoveryChecked=true;return;}
   var saved=getSavedSession();
   if(!saved||!saved.name||!saved.t0)return;
   recoveryChecked=true;
@@ -1393,7 +1397,8 @@ function exportDoc(){
   var dd=String(S.t0.getDate()).padStart(2,'0'),mm=String(S.t0.getMonth()+1).padStart(2,'0'),yy=String(S.t0.getFullYear()).slice(2);
   a.download=dd+'-'+mm+'-'+yy+'_'+r.className+'_'+r.studentName.replace(/\s+/g,'_')+'_'+r.taskType.replace(' ','')+'_FINAL.doc';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  /* Giữ URL lâu hơn một chút để Safari iOS kịp xử lý hộp thoại tải về */
+  setTimeout(function(){URL.revokeObjectURL(url)},60000);
 }
 
 /* ═══ SUBMIT TO DRIVE (with auto-retry) ═══ */
@@ -1420,8 +1425,10 @@ function attemptDriveSubmit(){
     return;
   }
 
-  fetch(S.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:driveData})
+  /* keepalive: vẫn gửi tiếp kể cả khi trang bị rời đi (VD: ấn "Xem" trên iPhone) */
+  fetch(S.url,{method:'POST',mode:'no-cors',keepalive:driveData.length<60000,headers:{'Content-Type':'text/plain'},body:driveData})
   .then(function(){
+    markDriveOK();
     $('subSt').innerHTML='<div class="ss ss-ok">✅ Report downloaded & submitted to teacher successfully!</div>';
     if(driveRetryTimer){clearTimeout(driveRetryTimer);driveRetryTimer=null}
     driveData=null;
@@ -1450,12 +1457,51 @@ window.addEventListener('online',function(){
 });
 
 function exportAndSubmit(){
-  exportDoc();
+  saveLastReport();
   if(S.url){
-    submitToDrive();
+    submitToDrive();   /* gửi Drive TRƯỚC */
   } else {
     $('subSt').innerHTML='<div class="ss ss-ok">✅ Report downloaded. Send the .doc file to your teacher via Zalo / Email / Drive.</div>';
   }
+  setTimeout(exportDoc, S.url?800:0);   /* rồi mới tải file */
+}
+
+/* ═══ LƯU TRANG TỔNG KẾT — không mất bài khi ấn "Xem" trên iPhone ═══ */
+var LAST_REPORT_KEY='iwl_last_report';
+function saveLastReport(){
+  var o={task:S.task,name:S.name,cls:S.cls,prompt:S.prompt,prompt2:S.prompt2,
+    essay:S.essay,essay2:S.essay2,tl:S.tl,total:S.total,
+    t0:S.t0?S.t0.toISOString():null,vio:S.vio,snaps:S.snaps,vioNum:vioNum,
+    device:S.device,img:S.img,url:S.url,driveOK:false};
+  try{sessionStorage.setItem(LAST_REPORT_KEY,JSON.stringify(o))}
+  catch(e){try{o.img=null;sessionStorage.setItem(LAST_REPORT_KEY,JSON.stringify(o))}catch(e2){}}
+}
+function markDriveOK(){
+  try{var o=JSON.parse(sessionStorage.getItem(LAST_REPORT_KEY));
+    if(o){o.driveOK=true;sessionStorage.setItem(LAST_REPORT_KEY,JSON.stringify(o))}}catch(e){}
+}
+function restoreLastReport(){
+  var o=null;
+  try{o=JSON.parse(sessionStorage.getItem(LAST_REPORT_KEY))}catch(e){}
+  if(!o||!o.t0||!TK[o.task])return false;
+  S.task=o.task;S.name=o.name;S.cls=o.cls;S.prompt=o.prompt||'';S.prompt2=o.prompt2||'';
+  S.essay=o.essay||'';S.essay2=o.essay2||'';S.tl=o.tl;S.total=o.total;
+  S.t0=new Date(o.t0);S.vio=o.vio||[];S.snaps=o.snaps||[];S.device=o.device||'pc';
+  S.img=o.img||null;S.url=o.url||SUBMIT_URL;S.run=false;
+  vioNum=o.vioNum||0;alreadySubmitted=true;isSubmitting=true;
+  D('P0',0);D('P1',0);D('P2',0);
+  review();
+  if(o.driveOK){
+    $('subSt').innerHTML='<div class="ss ss-ok">✅ Your exam has been submitted to your teacher. Tap the button below to download the report again.</div>';
+  } else if(S.url){
+    submitToDrive();
+  }
+  return true;
+}
+function newExam(){
+  if(!confirm('Start a new exam? This report will be closed.'))return;
+  try{sessionStorage.removeItem(LAST_REPORT_KEY)}catch(e){}
+  location.reload();
 }
 
 /* ═══ SCREEN WAKE LOCK — prevent screen from turning off ═══ */
